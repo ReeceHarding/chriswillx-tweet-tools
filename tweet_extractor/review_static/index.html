@@ -38,6 +38,7 @@
         display: grid;
         grid-template-columns: 280px minmax(0, 1fr) 260px;
         min-height: 100svh;
+        touch-action: pan-y pinch-zoom;
       }
 
       .rail,
@@ -112,7 +113,6 @@
         min-width: 0;
         padding: 48px;
         overflow: hidden;
-        touch-action: pan-y;
       }
 
       .tweet {
@@ -374,6 +374,7 @@
         touchStartY: 0,
         touchDeltaX: 0,
         syncing: false,
+        swipeActive: false,
       };
 
       const $ = (id) => document.getElementById(id);
@@ -497,31 +498,53 @@
         label.className = "swipe-label";
       }
 
-      $("tweet").addEventListener("touchstart", (event) => {
+      function isInteractiveElement(target) {
+        return Boolean(target.closest("button, a, input, textarea, select, summary"));
+      }
+
+      function swipeSurface() {
+        return $("app");
+      }
+
+      swipeSurface().addEventListener("touchstart", (event) => {
+        if (isInteractiveElement(event.target)) return;
         if (!event.touches.length) return;
         state.touchStartX = event.touches[0].clientX;
         state.touchStartY = event.touches[0].clientY;
         state.touchDeltaX = 0;
+        state.swipeActive = false;
       }, { passive: true });
 
-      $("tweet").addEventListener("touchmove", (event) => {
+      swipeSurface().addEventListener("touchmove", (event) => {
+        if (isInteractiveElement(event.target)) return;
         if (!event.touches.length) return;
         const deltaX = event.touches[0].clientX - state.touchStartX;
         const deltaY = event.touches[0].clientY - state.touchStartY;
-        if (Math.abs(deltaX) < 12 || Math.abs(deltaX) < Math.abs(deltaY)) return;
+        if (!state.swipeActive) {
+          if (Math.abs(deltaY) > 14 && Math.abs(deltaY) > Math.abs(deltaX)) return;
+          if (Math.abs(deltaX) < 12 || Math.abs(deltaX) < Math.abs(deltaY)) return;
+          state.swipeActive = true;
+        }
         event.preventDefault();
         state.touchDeltaX = deltaX;
         setSwipeVisual(deltaX);
       }, { passive: false });
 
-      $("tweet").addEventListener("touchend", () => {
+      swipeSurface().addEventListener("touchend", () => {
         const threshold = Math.min(140, Math.max(80, window.innerWidth * 0.22));
         const deltaX = state.touchDeltaX;
         resetSwipeVisual();
-        if (Math.abs(deltaX) >= threshold) {
+        if (state.swipeActive && Math.abs(deltaX) >= threshold) {
           decide(deltaX > 0 ? "keep" : "reject");
         }
         state.touchDeltaX = 0;
+        state.swipeActive = false;
+      });
+
+      swipeSurface().addEventListener("touchcancel", () => {
+        resetSwipeVisual();
+        state.touchDeltaX = 0;
+        state.swipeActive = false;
       });
 
       async function syncDecisions() {
