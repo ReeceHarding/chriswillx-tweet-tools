@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tweet Review</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f7f4;
+        --ink: #1d1d1b;
+        --muted: #6f6e68;
+        --line: #dedbd2;
+        --keep: #16633a;
+        --reject: #9c2d24;
+        --surface: #ffffff;
+        --accent: #1d4f91;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100svh;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .app {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr) 260px;
+        min-height: 100svh;
+      }
+
+      .rail,
+      .inspector {
+        padding: 24px;
+        border-color: var(--line);
+      }
+
+      .rail {
+        border-right: 1px solid var(--line);
+      }
+
+      .inspector {
+        border-left: 1px solid var(--line);
+      }
+
+      .brand {
+        margin: 0 0 28px;
+        font-size: 18px;
+        font-weight: 720;
+      }
+
+      .metric {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .metric strong {
+        color: var(--ink);
+        font-size: 15px;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        min-width: 0;
+        min-height: 100svh;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 20px 28px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .position {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .toggle {
+        border: 1px solid var(--line);
+        background: transparent;
+        color: var(--ink);
+        padding: 8px 11px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      .tweet-stage {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        padding: 48px;
+      }
+
+      .tweet {
+        width: min(760px, 100%);
+      }
+
+      .date {
+        margin-bottom: 20px;
+        color: var(--muted);
+        font-size: 15px;
+      }
+
+      .text {
+        margin: 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-size: clamp(28px, 4.6vw, 54px);
+        line-height: 1.08;
+        font-weight: 680;
+      }
+
+      .empty {
+        max-width: 520px;
+        color: var(--muted);
+        font-size: 22px;
+        line-height: 1.35;
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 12px;
+        padding: 20px 28px 28px;
+      }
+
+      .action {
+        min-height: 54px;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        color: var(--ink);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+      }
+
+      .action:hover {
+        transform: translateY(-1px);
+        border-color: var(--ink);
+      }
+
+      .action.reject {
+        color: var(--reject);
+      }
+
+      .action.keep {
+        color: var(--keep);
+      }
+
+      .action.undo {
+        min-width: 96px;
+      }
+
+      .hint {
+        margin-top: 24px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .detail-title {
+        margin: 0 0 16px;
+        font-size: 13px;
+        color: var(--muted);
+        text-transform: uppercase;
+      }
+
+      .detail-list {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .detail {
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .detail span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .detail strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 18px;
+      }
+
+      .link {
+        display: inline-flex;
+        margin-top: 28px;
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 14px;
+      }
+
+      .flash-keep .tweet-stage {
+        animation: keepPulse 220ms ease;
+      }
+
+      .flash-reject .tweet-stage {
+        animation: rejectPulse 220ms ease;
+      }
+
+      @keyframes keepPulse {
+        0% { background: rgba(22, 99, 58, 0.12); }
+        100% { background: transparent; }
+      }
+
+      @keyframes rejectPulse {
+        0% { background: rgba(156, 45, 36, 0.12); }
+        100% { background: transparent; }
+      }
+
+      @media (max-width: 980px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        .rail,
+        .inspector {
+          border: 0;
+          padding: 18px 20px;
+        }
+
+        .rail {
+          border-bottom: 1px solid var(--line);
+        }
+
+        .inspector {
+          border-top: 1px solid var(--line);
+        }
+
+        .workspace {
+          min-height: auto;
+        }
+
+        .tweet-stage {
+          padding: 36px 24px;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .topbar,
+        .actions {
+          padding-left: 18px;
+          padding-right: 18px;
+        }
+
+        .actions {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .action.undo {
+          grid-column: 1 / -1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app" id="app">
+      <aside class="rail">
+        <h1 class="brand">Tweet Review</h1>
+        <div class="metric"><span>Total</span><strong id="total">0</strong></div>
+        <div class="metric"><span>Remaining</span><strong id="remaining">0</strong></div>
+        <div class="metric"><span>Kept</span><strong id="kept">0</strong></div>
+        <div class="metric"><span>Rejected</span><strong id="rejected">0</strong></div>
+        <p class="hint">Right arrow keeps. Left arrow rejects. U undoes the last decision. Newest tweets appear first.</p>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div class="position" id="position">Loading</div>
+          <button class="toggle" id="refresh" type="button">Refresh</button>
+        </header>
+
+        <section class="tweet-stage">
+          <article class="tweet" id="tweet">
+            <div class="date" id="date"></div>
+            <p class="text" id="text"></p>
+          </article>
+          <div class="empty" id="empty" hidden>No tweets left to review. Export kept tweets when you are ready.</div>
+        </section>
+
+        <footer class="actions">
+          <button class="action reject" id="reject" type="button">← Reject</button>
+          <button class="action undo" id="undo" type="button">Undo</button>
+          <button class="action keep" id="keep" type="button">Keep →</button>
+        </footer>
+      </section>
+
+      <aside class="inspector">
+        <h2 class="detail-title">Current Tweet</h2>
+        <div class="detail-list">
+          <div class="detail"><span>Likes</span><strong id="likes">0</strong></div>
+          <div class="detail"><span>Retweets</span><strong id="retweets">0</strong></div>
+          <div class="detail"><span>Replies</span><strong id="replies">0</strong></div>
+          <div class="detail"><span>Views</span><strong id="views">0</strong></div>
+        </div>
+        <a class="link" id="tweetLink" href="#" target="_blank" rel="noreferrer">Open on X</a>
+        <button class="action" id="export" type="button" style="width: 100%; margin-top: 28px;">Export kept</button>
+      </aside>
+    </main>
+
+    <script>
+      const state = {
+        tweets: [],
+        current: 0,
+        status: {},
+        busy: false,
+      };
+
+      const $ = (id) => document.getElementById(id);
+      const format = (value) => Number(value || 0).toLocaleString();
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          headers: { "Content-Type": "application/json" },
+          ...options,
+        });
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      }
+
+      async function loadTweets() {
+        const payload = await api("/api/tweets");
+        state.tweets = payload.tweets;
+        state.status = payload.status;
+        state.current = 0;
+        render();
+      }
+
+      function currentTweet() {
+        return state.tweets[state.current];
+      }
+
+      function render() {
+        const tweet = currentTweet();
+        $("total").textContent = format(state.status.total);
+        $("remaining").textContent = format(state.status.remaining);
+        $("kept").textContent = format(state.status.kept);
+        $("rejected").textContent = format(state.status.rejected);
+        $("position").textContent = tweet
+          ? `${state.current + 1} of ${state.tweets.length} undecided`
+          : "Review complete";
+
+        $("tweet").hidden = !tweet;
+        $("empty").hidden = Boolean(tweet);
+        if (!tweet) return;
+
+        $("date").textContent = tweet.created_at;
+        $("text").textContent = tweet.text;
+        $("likes").textContent = format(tweet.likes);
+        $("retweets").textContent = format(tweet.retweets);
+        $("replies").textContent = format(tweet.replies);
+        $("views").textContent = format(tweet.views);
+        $("tweetLink").href = tweet.url;
+      }
+
+      async function decide(decision) {
+        const tweet = currentTweet();
+        if (!tweet || state.busy) return;
+        state.busy = true;
+        document.body.classList.remove("flash-keep", "flash-reject");
+        document.body.classList.add(decision === "keep" ? "flash-keep" : "flash-reject");
+        try {
+          const payload = await api("/api/decision", {
+            method: "POST",
+            body: JSON.stringify({ id: tweet.id, decision }),
+          });
+          state.status = payload.status;
+          state.tweets.splice(state.current, 1);
+          if (state.current >= state.tweets.length) state.current = Math.max(0, state.tweets.length - 1);
+          render();
+        } finally {
+          state.busy = false;
+        }
+      }
+
+      async function undo() {
+        if (state.busy) return;
+        state.busy = true;
+        try {
+          await api("/api/undo", { method: "POST", body: "{}" });
+          await loadTweets();
+        } finally {
+          state.busy = false;
+        }
+      }
+
+      async function exportKept() {
+        const payload = await api("/api/export-kept", { method: "POST", body: "{}" });
+        state.status = payload.status;
+        render();
+        alert(`Exported kept tweets to ${payload.path}`);
+      }
+
+      $("keep").addEventListener("click", () => decide("keep"));
+      $("reject").addEventListener("click", () => decide("reject"));
+      $("undo").addEventListener("click", undo);
+      $("refresh").addEventListener("click", loadTweets);
+      $("export").addEventListener("click", exportKept);
+
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          decide("keep");
+        } else if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          decide("reject");
+        } else if (event.key.toLowerCase() === "u") {
+          event.preventDefault();
+          undo();
+        }
+      });
+
+      loadTweets().catch((error) => {
+        $("position").textContent = "Failed to load tweets";
+        $("empty").hidden = false;
+        $("empty").textContent = error.message;
+      });
+    </script>
+  </body>
+</html>
+

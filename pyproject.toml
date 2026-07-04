@@ -1,0 +1,16 @@
+[project]
+name = "quotes-tweet-extractor"
+version = "0.1.0"
+description = "Resumable extractor for public X/Twitter posts from a target account."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+twscrape = ["twscrape>=0.19.1"]
+
+[project.scripts]
+extract-tweets = "tweet_extractor.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
