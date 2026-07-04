@@ -19,15 +19,19 @@ This is not legal advice. If you want to publish full text, get explicit permiss
 Start the keyboard review app:
 
 ```bash
-python3 -m tweet_extractor.review_server --data-dir data/chriswillx --port 8787
+python3 -m tweet_extractor.review_server --data-dir data/chriswillx --host 0.0.0.0 --port 8787
 ```
 
 Open `http://127.0.0.1:8787`.
 
 - Right arrow: keep
 - Left arrow: reject
+- Swipe right: keep
+- Swipe left: reject
 - `U`: undo
 - `Export kept`: writes `data/chriswillx/kept_tweets.jsonl`
+
+The server stores decisions in `data/chriswillx/review.sqlite3`, so desktop and phone sessions stay aligned through the same API. When started with `--host 0.0.0.0`, the terminal prints a LAN/mobile URL such as `http://192.168.x.x:8787`; open that on a phone connected to the same network.
 
 The reliable path for a complete historical pull is X API v2 full-archive search:
 

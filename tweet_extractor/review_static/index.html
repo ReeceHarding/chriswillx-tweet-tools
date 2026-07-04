@@ -111,10 +111,15 @@
         justify-content: center;
         min-width: 0;
         padding: 48px;
+        overflow: hidden;
+        touch-action: pan-y;
       }
 
       .tweet {
         width: min(760px, 100%);
+        user-select: none;
+        will-change: transform, opacity;
+        transition: transform 160ms ease, opacity 160ms ease;
       }
 
       .date {
@@ -226,6 +231,37 @@
         animation: rejectPulse 220ms ease;
       }
 
+      .swipe-label {
+        position: fixed;
+        left: 50%;
+        top: 18px;
+        z-index: 10;
+        transform: translateX(-50%);
+        min-width: 108px;
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        color: var(--muted);
+        text-align: center;
+        font-size: 13px;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 120ms ease;
+      }
+
+      .swipe-label.visible {
+        opacity: 1;
+      }
+
+      .swipe-label.keep {
+        color: var(--keep);
+      }
+
+      .swipe-label.reject {
+        color: var(--reject);
+      }
+
       @keyframes keepPulse {
         0% { background: rgba(22, 99, 58, 0.12); }
         100% { background: transparent; }
@@ -282,6 +318,7 @@
     </style>
   </head>
   <body>
+    <div class="swipe-label" id="swipeLabel">Swipe</div>
     <main class="app" id="app">
       <aside class="rail">
         <h1 class="brand">Tweet Review</h1>
@@ -289,7 +326,7 @@
         <div class="metric"><span>Remaining</span><strong id="remaining">0</strong></div>
         <div class="metric"><span>Kept</span><strong id="kept">0</strong></div>
         <div class="metric"><span>Rejected</span><strong id="rejected">0</strong></div>
-        <p class="hint">Right arrow keeps. Left arrow rejects. U undoes the last decision. Newest tweets appear first.</p>
+        <p class="hint">Right arrow or swipe right keeps. Left arrow or swipe left rejects. U undoes the last decision. Newest tweets appear first.</p>
       </aside>
 
       <section class="workspace">
@@ -332,10 +369,25 @@
         current: 0,
         status: {},
         busy: false,
+        deviceId: getDeviceId(),
+        touchStartX: 0,
+        touchStartY: 0,
+        touchDeltaX: 0,
+        syncing: false,
       };
 
       const $ = (id) => document.getElementById(id);
       const format = (value) => Number(value || 0).toLocaleString();
+
+      function getDeviceId() {
+        const key = "tweet-review-device-id";
+        let value = localStorage.getItem(key);
+        if (!value) {
+          value = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+          localStorage.setItem(key, value);
+        }
+        return value;
+      }
 
       async function api(path, options = {}) {
         const response = await fetch(path, {
@@ -390,7 +442,7 @@
         try {
           const payload = await api("/api/decision", {
             method: "POST",
-            body: JSON.stringify({ id: tweet.id, decision }),
+            body: JSON.stringify({ id: tweet.id, decision, device_id: state.deviceId }),
           });
           state.status = payload.status;
           state.tweets.splice(state.current, 1);
@@ -405,7 +457,7 @@
         if (state.busy) return;
         state.busy = true;
         try {
-          await api("/api/undo", { method: "POST", body: "{}" });
+          await api("/api/undo", { method: "POST", body: JSON.stringify({ device_id: state.deviceId }) });
           await loadTweets();
         } finally {
           state.busy = false;
@@ -425,6 +477,76 @@
       $("refresh").addEventListener("click", loadTweets);
       $("export").addEventListener("click", exportKept);
 
+      function setSwipeVisual(deltaX) {
+        const tweet = $("tweet");
+        const label = $("swipeLabel");
+        const abs = Math.abs(deltaX);
+        const direction = deltaX > 0 ? "keep" : "reject";
+        const rotate = Math.max(-7, Math.min(7, deltaX / 28));
+        tweet.style.transform = `translateX(${deltaX}px) rotate(${rotate}deg)`;
+        tweet.style.opacity = String(Math.max(0.35, 1 - abs / 520));
+        label.textContent = direction === "keep" ? "Keep" : "Reject";
+        label.className = `swipe-label visible ${direction}`;
+      }
+
+      function resetSwipeVisual() {
+        const tweet = $("tweet");
+        const label = $("swipeLabel");
+        tweet.style.transform = "";
+        tweet.style.opacity = "";
+        label.className = "swipe-label";
+      }
+
+      $("tweet").addEventListener("touchstart", (event) => {
+        if (!event.touches.length) return;
+        state.touchStartX = event.touches[0].clientX;
+        state.touchStartY = event.touches[0].clientY;
+        state.touchDeltaX = 0;
+      }, { passive: true });
+
+      $("tweet").addEventListener("touchmove", (event) => {
+        if (!event.touches.length) return;
+        const deltaX = event.touches[0].clientX - state.touchStartX;
+        const deltaY = event.touches[0].clientY - state.touchStartY;
+        if (Math.abs(deltaX) < 12 || Math.abs(deltaX) < Math.abs(deltaY)) return;
+        event.preventDefault();
+        state.touchDeltaX = deltaX;
+        setSwipeVisual(deltaX);
+      }, { passive: false });
+
+      $("tweet").addEventListener("touchend", () => {
+        const threshold = Math.min(140, Math.max(80, window.innerWidth * 0.22));
+        const deltaX = state.touchDeltaX;
+        resetSwipeVisual();
+        if (Math.abs(deltaX) >= threshold) {
+          decide(deltaX > 0 ? "keep" : "reject");
+        }
+        state.touchDeltaX = 0;
+      });
+
+      async function syncDecisions() {
+        if (state.syncing || state.busy) return;
+        state.syncing = true;
+        try {
+          const payload = await api("/api/sync");
+          state.status = payload.status;
+          const decided = payload.decisions || {};
+          const before = state.tweets.length;
+          state.tweets = state.tweets.filter((tweet) => !decided[tweet.id]);
+          if (before !== state.tweets.length) {
+            state.current = Math.min(state.current, Math.max(0, state.tweets.length - 1));
+            render();
+          } else {
+            $("total").textContent = format(state.status.total);
+            $("remaining").textContent = format(state.status.remaining);
+            $("kept").textContent = format(state.status.kept);
+            $("rejected").textContent = format(state.status.rejected);
+          }
+        } finally {
+          state.syncing = false;
+        }
+      }
+
       window.addEventListener("keydown", (event) => {
         if (event.key === "ArrowRight") {
           event.preventDefault();
@@ -443,7 +565,7 @@
         $("empty").hidden = false;
         $("empty").textContent = error.message;
       });
+      setInterval(syncDecisions, 2500);
     </script>
   </body>
 </html>
-

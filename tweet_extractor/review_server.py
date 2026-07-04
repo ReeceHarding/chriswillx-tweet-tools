@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import socket
+import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,11 +33,18 @@ class ReviewConfig:
     def decisions_path(self) -> Path:
         return self.data_dir / "review_decisions.jsonl"
 
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "review.sqlite3"
+
 
 class ReviewStore:
     def __init__(self, config: ReviewConfig) -> None:
         self.config = config
         self._lock = threading.Lock()
+        self.config.data_dir.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+        self._migrate_jsonl_decisions()
 
     def tweets(self) -> list[dict[str, Any]]:
         if not self.config.tweets_path.exists():
@@ -51,48 +60,114 @@ class ReviewStore:
         return records
 
     def decisions(self) -> dict[str, dict[str, Any]]:
-        events = self.decision_events()
         latest: dict[str, dict[str, Any]] = {}
-        for event in events:
-            tweet_id = str(event.get("id", ""))
-            if tweet_id:
-                latest[tweet_id] = event
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT tweet_id, decision, created_at, device_id FROM decisions ORDER BY created_at ASC"
+            ).fetchall()
+        for tweet_id, decision, created_at, device_id in rows:
+            latest[str(tweet_id)] = {
+                "id": str(tweet_id),
+                "decision": decision,
+                "created_at": created_at,
+                "device_id": device_id,
+            }
         return latest
 
     def decision_events(self) -> list[dict[str, Any]]:
-        if not self.config.decisions_path.exists():
-            return []
-        events = []
-        with self.config.decisions_path.open("r", encoding="utf-8") as file:
-            for line in file:
-                if line.strip():
-                    events.append(json.loads(line))
-        return events
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT tweet_id, decision, created_at, device_id FROM decision_events ORDER BY event_id ASC"
+            ).fetchall()
+        return [
+            {"id": str(tweet_id), "decision": decision, "created_at": created_at, "device_id": device_id}
+            for tweet_id, decision, created_at, device_id in rows
+        ]
 
-    def add_decision(self, tweet_id: str, decision: str) -> dict[str, Any]:
+    def add_decision(self, tweet_id: str, decision: str, device_id: str = "") -> dict[str, Any]:
         if decision not in {"keep", "reject"}:
             raise ValueError("decision must be keep or reject")
+        if not tweet_id:
+            raise ValueError("tweet id is required")
         event = {
             "id": tweet_id,
             "decision": decision,
             "created_at": datetime.now(UTC).isoformat(),
+            "device_id": device_id,
         }
-        self.config.data_dir.mkdir(parents=True, exist_ok=True)
         with self._lock:
-            with self.config.decisions_path.open("a", encoding="utf-8") as file:
-                file.write(json.dumps(event, ensure_ascii=False) + "\n")
+            with self._connect() as db:
+                db.execute(
+                    """
+                    INSERT INTO decision_events (tweet_id, decision, created_at, device_id)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (tweet_id, decision, event["created_at"], device_id),
+                )
+                db.execute(
+                    """
+                    INSERT INTO decisions (tweet_id, decision, created_at, device_id)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(tweet_id) DO UPDATE SET
+                      decision = excluded.decision,
+                      created_at = excluded.created_at,
+                      device_id = excluded.device_id
+                    """,
+                    (tweet_id, decision, event["created_at"], device_id),
+                )
         return event
 
-    def undo(self) -> dict[str, Any] | None:
+    def undo(self, device_id: str = "") -> dict[str, Any] | None:
         with self._lock:
-            events = self.decision_events()
-            if not events:
-                return None
-            removed = events.pop()
-            self.config.decisions_path.write_text(
-                "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
-                encoding="utf-8",
-            )
+            with self._connect() as db:
+                if device_id:
+                    row = db.execute(
+                        """
+                        SELECT event_id, tweet_id, decision, created_at, device_id
+                        FROM decision_events
+                        WHERE device_id = ?
+                        ORDER BY event_id DESC
+                        LIMIT 1
+                        """,
+                        (device_id,),
+                    ).fetchone()
+                else:
+                    row = db.execute(
+                        """
+                        SELECT event_id, tweet_id, decision, created_at, device_id
+                        FROM decision_events
+                        ORDER BY event_id DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                if not row:
+                    return None
+
+                event_id, tweet_id, decision, created_at, row_device_id = row
+                db.execute("DELETE FROM decision_events WHERE event_id = ?", (event_id,))
+                previous = db.execute(
+                    """
+                    SELECT decision, created_at, device_id
+                    FROM decision_events
+                    WHERE tweet_id = ?
+                    ORDER BY event_id DESC
+                    LIMIT 1
+                    """,
+                    (tweet_id,),
+                ).fetchone()
+                if previous:
+                    db.execute(
+                        "UPDATE decisions SET decision = ?, created_at = ?, device_id = ? WHERE tweet_id = ?",
+                        (previous[0], previous[1], previous[2], tweet_id),
+                    )
+                else:
+                    db.execute("DELETE FROM decisions WHERE tweet_id = ?", (tweet_id,))
+                removed = {
+                    "id": str(tweet_id),
+                    "decision": decision,
+                    "created_at": created_at,
+                    "device_id": row_device_id,
+                }
             return removed
 
     def export_kept(self) -> Path:
@@ -104,6 +179,72 @@ class ReviewStore:
                 if tweet["id"] in kept_ids:
                     file.write(json.dumps(tweet["raw"], ensure_ascii=False) + "\n")
         return output
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.config.db_path)
+
+    def _init_db(self) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS decisions (
+                    tweet_id TEXT PRIMARY KEY,
+                    decision TEXT NOT NULL CHECK(decision IN ('keep', 'reject')),
+                    created_at TEXT NOT NULL,
+                    device_id TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS decision_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tweet_id TEXT NOT NULL,
+                    decision TEXT NOT NULL CHECK(decision IN ('keep', 'reject')),
+                    created_at TEXT NOT NULL,
+                    device_id TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            db.execute("CREATE INDEX IF NOT EXISTS idx_decision_events_tweet ON decision_events(tweet_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_decision_events_device ON decision_events(device_id)")
+
+    def _migrate_jsonl_decisions(self) -> None:
+        if not self.config.decisions_path.exists():
+            return
+        with self._connect() as db:
+            existing = db.execute("SELECT COUNT(*) FROM decision_events").fetchone()[0]
+        if existing:
+            return
+        with self.config.decisions_path.open("r", encoding="utf-8") as file:
+            for line in file:
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                tweet_id = str(event.get("id", ""))
+                decision = str(event.get("decision", ""))
+                if tweet_id and decision in {"keep", "reject"}:
+                    created_at = str(event.get("created_at") or datetime.now(UTC).isoformat())
+                    device_id = str(event.get("device_id") or "migrated")
+                    with self._lock, self._connect() as db:
+                        db.execute(
+                            """
+                            INSERT INTO decision_events (tweet_id, decision, created_at, device_id)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (tweet_id, decision, created_at, device_id),
+                        )
+                        db.execute(
+                            """
+                            INSERT INTO decisions (tweet_id, decision, created_at, device_id)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(tweet_id) DO UPDATE SET
+                              decision = excluded.decision,
+                              created_at = excluded.created_at,
+                              device_id = excluded.device_id
+                            """,
+                            (tweet_id, decision, created_at, device_id),
+                        )
 
     @staticmethod
     def _tweet_view(item: dict[str, Any]) -> dict[str, Any]:
@@ -158,6 +299,9 @@ def make_handler(store: ReviewStore) -> type[BaseHTTPRequestHandler]:
             if parsed.path == "/api/status":
                 self._send_json(self._status())
                 return
+            if parsed.path == "/api/sync":
+                self._send_json({"decisions": store.decisions(), "status": self._status()})
+                return
             if parsed.path in {"/", "/index.html"}:
                 self._send_file(STATIC_DIR / "index.html")
                 return
@@ -171,11 +315,16 @@ def make_handler(store: ReviewStore) -> type[BaseHTTPRequestHandler]:
             parsed = urlparse(self.path)
             if parsed.path == "/api/decision":
                 payload = self._read_json()
-                event = store.add_decision(str(payload.get("id", "")), str(payload.get("decision", "")))
+                event = store.add_decision(
+                    str(payload.get("id", "")),
+                    str(payload.get("decision", "")),
+                    str(payload.get("device_id", "")),
+                )
                 self._send_json({"ok": True, "event": event, "status": self._status()})
                 return
             if parsed.path == "/api/undo":
-                removed = store.undo()
+                payload = self._read_json()
+                removed = store.undo(str(payload.get("device_id", "")))
                 self._send_json({"ok": True, "removed": removed, "status": self._status()})
                 return
             if parsed.path == "/api/export-kept":
@@ -209,6 +358,7 @@ def make_handler(store: ReviewStore) -> type[BaseHTTPRequestHandler]:
                 "rejected": rejected,
                 "tweets_path": str(store.config.tweets_path),
                 "decisions_path": str(store.config.decisions_path),
+                "db_path": str(store.config.db_path),
             }
 
         def _read_json(self) -> dict[str, Any]:
@@ -243,9 +393,18 @@ def make_handler(store: ReviewStore) -> type[BaseHTTPRequestHandler]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Keyboard-first tweet review tool.")
     parser.add_argument("--data-dir", type=Path, default=Path("data/chriswillx"))
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8787)
     return parser
+
+
+def local_lan_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -253,7 +412,12 @@ def main(argv: list[str] | None = None) -> int:
     config = ReviewConfig(data_dir=args.data_dir, host=args.host, port=args.port)
     store = ReviewStore(config)
     server = ThreadingHTTPServer((config.host, config.port), make_handler(store))
-    print(f"Review app running at http://{config.host}:{config.port}")
+    display_host = "127.0.0.1" if config.host in {"0.0.0.0", ""} else config.host
+    print(f"Review app running at http://{display_host}:{config.port}")
+    if config.host in {"0.0.0.0", ""}:
+        lan_ip = local_lan_ip()
+        if lan_ip:
+            print(f"LAN/mobile URL: http://{lan_ip}:{config.port}")
     print(f"Reading tweets from {config.tweets_path}")
     try:
         server.serve_forever()

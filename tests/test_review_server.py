@@ -25,14 +25,37 @@ class ReviewStoreTest(unittest.TestCase):
     def test_decisions_and_undo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = ReviewStore(ReviewConfig(data_dir=Path(tmp), host="127.0.0.1", port=0))
-            store.add_decision("1", "keep")
-            store.add_decision("2", "reject")
+            store.add_decision("1", "keep", "desktop")
+            store.add_decision("2", "reject", "mobile")
 
             self.assertEqual(store.decisions()["1"]["decision"], "keep")
-            self.assertEqual(store.undo()["id"], "2")
+            self.assertEqual(store.undo("mobile")["id"], "2")
             self.assertNotIn("2", store.decisions())
+
+    def test_latest_decision_wins_across_devices(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ReviewStore(ReviewConfig(data_dir=Path(tmp), host="127.0.0.1", port=0))
+            store.add_decision("1", "keep", "desktop")
+            store.add_decision("1", "reject", "mobile")
+
+            self.assertEqual(store.decisions()["1"]["decision"], "reject")
+            self.assertEqual(store.undo("mobile")["id"], "1")
+            self.assertEqual(store.decisions()["1"]["decision"], "keep")
+
+    def test_migrates_jsonl_decisions_to_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            (data_dir / "review_decisions.jsonl").write_text(
+                json.dumps({"id": "1", "decision": "keep", "created_at": "2026-01-01T00:00:00+00:00"})
+                + "\n",
+                encoding="utf-8",
+            )
+
+            store = ReviewStore(ReviewConfig(data_dir=data_dir, host="127.0.0.1", port=0))
+
+            self.assertEqual(store.decisions()["1"]["decision"], "keep")
+            self.assertTrue((data_dir / "review.sqlite3").exists())
 
 
 if __name__ == "__main__":
     unittest.main()
-
