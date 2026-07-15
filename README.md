@@ -33,6 +33,30 @@ Open `http://127.0.0.1:8787`.
 
 The server stores decisions in `data/chriswillx/review.sqlite3`, so desktop and phone sessions stay aligned through the same API. When started with `--host 0.0.0.0`, the terminal prints a LAN/mobile URL such as `http://192.168.x.x:8787`; open that on a phone connected to the same network.
 
+Hosted Supabase backend:
+
+```bash
+mkdir -p .secrets
+printf '%s' "$SUPABASE_URL" > .secrets/supabase_url
+printf '%s' "$SUPABASE_KEY" > .secrets/supabase_key
+python3 -m tweet_extractor.review_server \
+  --backend supabase \
+  --data-dir data/chriswillx \
+  --host 0.0.0.0 \
+  --port 8787
+```
+
+One-time upload from local JSONL/SQLite into Supabase:
+
+```bash
+python3 -m tweet_extractor.review_server \
+  --backend supabase \
+  --data-dir data/chriswillx \
+  --sync-remote-only
+```
+
+Security note: the Supabase path keeps the API key server-side in `.secrets` and never sends it to the browser. The current hosted tables are intended for this private review tool. For a public multi-user deployment, enable Row Level Security and add appropriate policies before exposing the database directly.
+
 The reliable path for a complete historical pull is X API v2 full-archive search:
 
 ```bash
